@@ -329,17 +329,59 @@ function enableStartAndClear(workerName){
   if (workerName) logStatus(`⚙ Ready: ${workerName} selected`);
 }
 
+// ===== Demo Library auto-scan =====
+// manifest.json still gives curated files a friendly display name. This additionally
+// fetches the DemoLibrary/ directory listing (served by http-server locally, and by
+// most autoindex-capable static servers) and adds any file not already in the manifest,
+// so dropping a file in the folder is enough — no manual manifest edit required. On
+// hosts with no directory listing (e.g. GitHub Pages), the fetch/parse just finds
+// nothing and we silently fall back to the manifest-only list.
+const DEMO_FILE_EXTENSIONS = ['.txt', '.log', '.json', '.jsonl', '.xml'];
+
+async function discoverDemoFiles(curated) {
+  try {
+    const res = await fetch('DemoLibrary/?_=' + Date.now());
+    if (!res.ok) return [];
+    const html = await res.text();
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const knownPaths = new Set(curated.map(f => f.path));
+    const found = [];
+    doc.querySelectorAll('a[href]').forEach(a => {
+      const href = a.getAttribute('href') || '';
+      if (!href || href.endsWith('/') || href.startsWith('http')) return; // skip parent dir, subfolders, external links
+      const name = decodeURIComponent(href.replace(/^\.?\//, ''));
+      if (name.toLowerCase() === 'manifest.json') return;
+      const ext = name.slice(name.lastIndexOf('.')).toLowerCase();
+      if (!DEMO_FILE_EXTENSIONS.includes(ext)) return;
+      const path = 'DemoLibrary/' + name;
+      if (knownPaths.has(path)) return;
+      found.push({ name: name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' '), path });
+    });
+    return found;
+  } catch {
+    return [];
+  }
+}
+
 // ===== Demo Library & config.json autoload =====
 document.addEventListener('DOMContentLoaded', async () => {
   const demoSel = document.getElementById('demoLibrarySelect');
   const demoInfo = document.getElementById('demoLibraryInfo');
   if (demoSel){
     const manifest = await tryLoadJSON('DemoLibrary/manifest.json');
+    const curated = (manifest && Array.isArray(manifest.files)) ? manifest.files : [];
+    const discovered = await discoverDemoFiles(curated);
     demoSel.innerHTML = '';
-    if (manifest && Array.isArray(manifest.files) && manifest.files.length){
+    if (curated.length || discovered.length){
       const opt0 = document.createElement('option'); opt0.value=''; opt0.textContent='— choose demo file —';
       demoSel.appendChild(opt0);
-      manifest.files.forEach(f => { const opt = document.createElement('option'); opt.value = f.path; opt.textContent = f.name; demoSel.appendChild(opt); });
+      const addOption = (f, parent) => { const opt = document.createElement('option'); opt.value = f.path; opt.textContent = f.name; parent.appendChild(opt); };
+      curated.forEach(f => addOption(f, demoSel));
+      if (discovered.length){
+        const group = document.createElement('optgroup'); group.label = 'Auto-discovered';
+        discovered.forEach(f => addOption(f, group));
+        demoSel.appendChild(group);
+      }
       demoSel.onchange = async () => {
         const v = demoSel.value;
         if (v){
